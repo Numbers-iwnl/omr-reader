@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+build/
+dist/
+env/
+.venv/
+*.png
+*.jpg
+*.jpeg
+!docs/*.png
+!examples/*.png
+*.xlsx
