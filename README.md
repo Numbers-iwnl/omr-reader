@@ -42,3 +42,10 @@ Se aparecer muito `blank` ou `MULTI` em fotos reais, a gente ajusta:
 - os parâmetros de recorte (onde começa a área das 90 questões),
 - `blank_delta` e `ambiguous_delta`,
 - e, se necessário, um “filtro” para ignorar círculos fora da região das bolhas.
+
+
+## Importante (modelo fixo)
+Este leitor usa um **template interno** (coordenadas das bolhas no layout ENEM após o warp 1200x1700).
+Isso evita depender de detectar todas as bolhas por Hough (que falha em fotos ruins), e melhora MUITO a precisão.
+
+Se, no futuro, o layout mudar, a gente recalibra o template com uma foto "boa".
