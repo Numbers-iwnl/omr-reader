@@ -308,20 +308,37 @@ def read_omr_answers(
     image_path: str,
     config=None,
     debug_dir: Optional[str] = None,
+    q_start: int = 1,
 ) -> List[Answer]:
+    """
+    q_start: número da primeira questão (1 para Dia 1, 91 para Dia 2).
+    """
 
-    img    = imread_unicode(image_path)
-    warped = warp_sheet(img)
-    gray   = cv2.cvtColor(warped, cv2.COLOR_BGR2GRAY)
+    img  = imread_unicode(image_path)
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
-    boxes  = _detect_panel_boxes(gray)
+    # Tenta detectar painéis direto na imagem bruta (sem warp global).
+    # Se não encontrar 6, tenta com warp como fallback.
+    boxes = _detect_panel_boxes(gray)
+    if len(boxes) < 6:
+        try:
+            warped     = warp_sheet(img)
+            gray_warp  = cv2.cvtColor(warped, cv2.COLOR_BGR2GRAY)
+            boxes_warp = _detect_panel_boxes(gray_warp)
+            if len(boxes_warp) > len(boxes):
+                img  = warped
+                gray = gray_warp
+                boxes = boxes_warp
+        except Exception:
+            pass
+
     while len(boxes) < 6:
         boxes = _fill_missing(boxes, gray.shape)
     boxes = boxes[:6]
 
     letters = ["A", "B", "C", "D", "E"]
     out: List[Answer] = []
-    overlay = warped.copy()
+    overlay = img.copy()
 
     for p, (bx, by, bw, bh) in enumerate(boxes):
         bx = max(0, min(bx, WARP_W - 1))
@@ -331,7 +348,7 @@ def read_omr_answers(
 
         if bw < 20 or bh < 20:
             for row in range(15):
-                out.append(Answer(1 + p*15 + row, "", "blank", 0.0))
+                out.append(Answer(q_start + p*15 + row, "", "blank", 0.0))
             continue
 
         panel_gray  = gray[by:by+bh, bx:bx+bw]
@@ -365,7 +382,7 @@ def read_omr_answers(
         blank_thr = max(float(np.percentile(all_raw, BLANK_PCTILE)), 8.0)
 
         for row in range(15):
-            q  = 1 + p * 15 + row
+            q  = q_start + p * 15 + row
 
             # Scores brutos da linha
             sc_raw = np.array([cache[row][col][0] for col in range(5)],
@@ -404,10 +421,10 @@ def read_omr_answers(
     if debug_dir is not None:
         d = Path(debug_dir)
         d.mkdir(parents=True, exist_ok=True)
-        imwrite_unicode(str(d / "01_warped.png"),      warped)
+        imwrite_unicode(str(d / "01_warped.png"),      img)
         imwrite_unicode(str(d / "02_overlay.png"),     overlay)
 
-        box_vis = warped.copy()
+        box_vis = img.copy()
         for i, (bx, by, bw, bh) in enumerate(boxes):
             cv2.rectangle(box_vis, (bx, by), (bx+bw, by+bh), (255, 0, 0), 3)
             cv2.putText(box_vis, f"P{i+1}", (bx+5, by+30),

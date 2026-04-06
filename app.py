@@ -1,89 +1,251 @@
-\
 from __future__ import annotations
 
-import os
 from pathlib import Path
+from typing import List
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtWidgets import (
-    QApplication, QWidget, QVBoxLayout, QPushButton, QLabel,
-    QFileDialog, QMessageBox, QCheckBox
+    QApplication, QWidget, QVBoxLayout, QHBoxLayout,
+    QPushButton, QLabel, QFileDialog, QMessageBox,
+    QCheckBox, QButtonGroup, QRadioButton, QGroupBox,
+    QProgressBar, QFrame, QScrollArea
 )
+from PySide6.QtGui import QFont
 
 from omr_reader import read_omr_answers, OMRConfig
 from exporter import export_answers_to_xlsx
 
 
+# ---------------------------------------------------------------------------
+# Worker thread – processa imagens sem travar a UI
+# ---------------------------------------------------------------------------
+class WorkerThread(QThread):
+    progress    = Signal(int, int, str)   # (atual, total, mensagem)
+    finished    = Signal(list)            # lista de (img_path, out_path, n_answers, n_blank, n_ambig)
+    error       = Signal(str, str)        # (img_path, mensagem de erro)
+
+    def __init__(self, files: List[str], q_start: int, debug: bool):
+        super().__init__()
+        self.files   = files
+        self.q_start = q_start
+        self.debug   = debug
+
+    def run(self):
+        results = []
+        for i, fp in enumerate(self.files):
+            self.progress.emit(i + 1, len(self.files), Path(fp).name)
+            try:
+                debug_dir = None
+                if self.debug:
+                    p = Path(fp)
+                    debug_dir = str(p.with_name(p.stem + "_debug"))
+
+                answers = read_omr_answers(
+                    fp,
+                    config=OMRConfig(),
+                    debug_dir=debug_dir,
+                    q_start=self.q_start,
+                )
+
+                out_path = Path(fp).with_name(Path(fp).stem + "_respostas.xlsx")
+                export_answers_to_xlsx(answers, fp, str(out_path))
+
+                n_blank = sum(1 for a in answers if a.status == "blank")
+                n_ambig = sum(1 for a in answers if a.status == "ambiguous")
+                results.append((fp, str(out_path), len(answers), n_blank, n_ambig))
+
+            except Exception as e:
+                self.error.emit(fp, f"{type(e).__name__}: {e}")
+
+        self.finished.emit(results)
+
+
+# ---------------------------------------------------------------------------
+# UI principal
+# ---------------------------------------------------------------------------
 class MainWindow(QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Leitor de Gabarito (Cartão-Resposta)")
+        self.setWindowTitle("Leitor de Gabarito — Amo Medicina")
+        self.setMinimumWidth(560)
+        self._worker = None
 
-        layout = QVBoxLayout()
-        layout.setSpacing(12)
+        root = QVBoxLayout()
+        root.setSpacing(14)
+        root.setContentsMargins(18, 18, 18, 18)
 
-        self.title = QLabel("Selecione a foto do cartão-resposta e eu salvo um .xlsx com as respostas.")
-        self.title.setWordWrap(True)
+        # ── Título ──────────────────────────────────────────────────────────
+        title = QLabel("Leitor de Cartão-Resposta")
+        f = QFont(); f.setPointSize(14); f.setBold(True)
+        title.setFont(f)
+        root.addWidget(title)
 
-        self.btn = QPushButton("Selecionar imagem…")
-        self.btn.clicked.connect(self.select_image)
+        sub = QLabel("Converte fotos de gabaritos em planilha .xlsx automaticamente.")
+        sub.setStyleSheet("color: #555;")
+        root.addWidget(sub)
 
-        self.debug = QCheckBox("Gerar arquivos de debug (warp/overlay) ao lado do .xlsx")
-        self.debug.setChecked(False)
+        root.addWidget(self._hline())
 
-        self.hint = QLabel("Dica: pegue as 4 bordas da folha na foto e evite sombra forte.")
-        self.hint.setStyleSheet("color: #666;")
-        self.hint.setWordWrap(True)
+        # ── Seleção de Dia ───────────────────────────────────────────────────
+        dia_box = QGroupBox("Dia do simulado")
+        dia_lay = QHBoxLayout()
+        dia_lay.setSpacing(20)
 
-        layout.addWidget(self.title)
-        layout.addWidget(self.btn)
-        layout.addWidget(self.debug)
-        layout.addWidget(self.hint)
+        self._dia_group = QButtonGroup(self)
+        self._r_dia1 = QRadioButton("Dia 1  (questões 1 – 90)")
+        self._r_dia2 = QRadioButton("Dia 2  (questões 91 – 180)")
+        self._r_dia1.setChecked(True)
+        self._dia_group.addButton(self._r_dia1, 1)
+        self._dia_group.addButton(self._r_dia2, 2)
 
-        self.setLayout(layout)
-        self.setMinimumWidth(520)
+        dia_lay.addWidget(self._r_dia1)
+        dia_lay.addWidget(self._r_dia2)
+        dia_lay.addStretch()
+        dia_box.setLayout(dia_lay)
+        root.addWidget(dia_box)
 
-    def select_image(self):
-        file_path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Escolher imagem do cartão-resposta",
-            "",
-            "Imagens (*.jpg *.jpeg *.png *.bmp *.webp);;Todos os arquivos (*.*)"
+        # ── Opções ───────────────────────────────────────────────────────────
+        self._chk_debug = QCheckBox(
+            "Salvar imagens de debug (overlay + caixas detectadas) ao lado do .xlsx"
         )
-        if not file_path:
+        root.addWidget(self._chk_debug)
+
+        # ── Botão de seleção ─────────────────────────────────────────────────
+        self._btn = QPushButton("📂  Selecionar imagem(ns)…")
+        self._btn.setMinimumHeight(40)
+        self._btn.clicked.connect(self._pick_files)
+        root.addWidget(self._btn)
+
+        # ── Barra de progresso (oculta até usar) ────────────────────────────
+        self._prog_label = QLabel("")
+        self._prog_label.setStyleSheet("color: #444; font-size: 11px;")
+        self._prog_label.hide()
+        root.addWidget(self._prog_label)
+
+        self._prog_bar = QProgressBar()
+        self._prog_bar.setTextVisible(False)
+        self._prog_bar.hide()
+        root.addWidget(self._prog_bar)
+
+        root.addWidget(self._hline())
+
+        # ── Área de resultados ───────────────────────────────────────────────
+        self._result_label = QLabel("Resultados aparecerão aqui.")
+        self._result_label.setStyleSheet("color: #666; font-size: 11px;")
+        self._result_label.setWordWrap(True)
+        self._result_label.setAlignment(Qt.AlignTop)
+        root.addWidget(self._result_label)
+
+        # ── Dica ─────────────────────────────────────────────────────────────
+        hint = QLabel(
+            "💡 Dica: enquadre a folha inteira na foto (4 bordas visíveis) "
+            "e evite sombras sobre os painéis de resposta."
+        )
+        hint.setStyleSheet("color: #888; font-size: 10px;")
+        hint.setWordWrap(True)
+        root.addWidget(hint)
+
+        self.setLayout(root)
+
+    # ── helpers ─────────────────────────────────────────────────────────────
+    @staticmethod
+    def _hline() -> QFrame:
+        line = QFrame()
+        line.setFrameShape(QFrame.HLine)
+        line.setStyleSheet("color: #ddd;")
+        return line
+
+    def _q_start(self) -> int:
+        return 91 if self._dia_group.checkedId() == 2 else 1
+
+    # ── slots ────────────────────────────────────────────────────────────────
+    def _pick_files(self):
+        files, _ = QFileDialog.getOpenFileNames(
+            self,
+            "Escolher imagem(ns) do cartão-resposta",
+            "",
+            "Imagens (*.jpg *.jpeg *.png *.bmp *.webp);;Todos os arquivos (*.*)",
+        )
+        if not files:
+            return
+        self._process(files)
+
+    def _process(self, files: List[str]):
+        self._btn.setEnabled(False)
+        self._prog_bar.setMaximum(len(files))
+        self._prog_bar.setValue(0)
+        self._prog_bar.show()
+        self._prog_label.show()
+        self._result_label.setText("Processando…")
+
+        self._worker = WorkerThread(
+            files,
+            q_start=self._q_start(),
+            debug=self._chk_debug.isChecked(),
+        )
+        self._worker.progress.connect(self._on_progress)
+        self._worker.finished.connect(self._on_finished)
+        self._worker.error.connect(self._on_error)
+        self._worker.start()
+
+    def _on_progress(self, current: int, total: int, name: str):
+        self._prog_bar.setValue(current)
+        self._prog_label.setText(f"Processando {current}/{total}: {name}")
+
+    def _on_finished(self, results):
+        self._btn.setEnabled(True)
+        self._prog_bar.hide()
+        self._prog_label.hide()
+
+        if not results:
+            self._result_label.setText("Nenhum arquivo processado com sucesso.")
             return
 
-        try:
-            cfg = OMRConfig()
-            answers = read_omr_answers(file_path, cfg, debug_dir=None)
+        lines = []
+        for fp, out_path, n_total, n_blank, n_ambig in results:
+            name  = Path(fp).name
+            flags = []
+            if n_blank:
+                flags.append(f"{n_blank} em branco")
+            if n_ambig:
+                flags.append(f"{n_ambig} ambíguo(s) — verificar manualmente")
+            flag_str = f"  ⚠️ {', '.join(flags)}" if flags else "  ✅ tudo certo"
+            lines.append(f"✔ {name}\n   → {Path(out_path).name}{flag_str}")
 
-            # salva ao lado da imagem
-            img = Path(file_path)
-            out_path = img.with_name(img.stem + "_respostas.xlsx")
-            export_answers_to_xlsx(answers, file_path, str(out_path))
+        self._result_label.setText("\n\n".join(lines))
 
-            if self.debug.isChecked():
-                debug_dir = img.with_name(img.stem + "_debug")
-                # reprocessa só pra salvar overlays (sem mexer no fluxo do usuário)
-                read_omr_answers(file_path, cfg, debug_dir=str(debug_dir))
-
+        # Popup de confirmação apenas quando há poucos arquivos
+        if len(results) <= 3:
+            msg_lines = []
+            for fp, out_path, n_total, n_blank, n_ambig in results:
+                msg_lines.append(f"• {Path(out_path).name}")
+                if n_blank or n_ambig:
+                    msg_lines.append(
+                        f"  ({n_blank} em branco, {n_ambig} ambíguo(s))"
+                    )
             QMessageBox.information(
                 self,
                 "Pronto!",
-                f"Planilha salva em:\n\n{out_path}\n\n"
-                "Se aparecer muito 'blank' ou 'MULTI', tente uma foto mais nítida/centralizada."
+                "Planilha(s) salva(s):\n\n" + "\n".join(msg_lines),
             )
 
-        except Exception as e:
-            QMessageBox.critical(
-                self,
-                "Erro ao ler o gabarito",
-                f"{type(e).__name__}: {e}\n\n"
-                "Sugestões:\n"
-                "• Garanta que a folha inteira (4 bordas) apareça na foto\n"
-                "• Evite sombras e reflexos\n"
-                "• Aumente um pouco a distância e mantenha a câmera mais paralela à folha"
+    def _on_error(self, fp: str, msg: str):
+        name = Path(fp).name
+        self._result_label.setText(
+            self._result_label.text().replace(
+                "Processando…", f"❌ Erro em {name}:\n{msg}"
             )
+        )
+        QMessageBox.warning(
+            self,
+            f"Erro — {name}",
+            f"{msg}\n\n"
+            "Sugestões:\n"
+            "• Verifique se selecionou o Dia correto (1 ou 2)\n"
+            "• Garanta que as 4 bordas da folha apareçam na foto\n"
+            "• Evite sombras e reflexos sobre os painéis de resposta\n"
+            "• Mantenha a câmera paralela à folha",
+        )
 
 
 def main():

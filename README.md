@@ -46,3 +46,16 @@ Selecione a foto do cartão. O `.xlsx` é salvo na mesma pasta da imagem.
 | `ok` | Resposta clara e única |
 | `blank` | Nenhuma bolha marcada com confiança |
 | `ambiguous` | Duas bolhas muito próximas em score — verificar manualmente |
+
+## Histórico de versões
+
+### v3.1 (atual)
+- **Fix crítico:** pipeline agora detecta painéis direto na imagem bruta, sem depender do warp global. O warp é usado apenas como fallback. Isso resolve as falhas em fotos onde o detector de 4 cantos não encontrava o contorno da folha.
+- **Suporte a Dia 2 (Q91–180):** botão de seleção na interface. Passe `q_start=91` na API.
+- **Seleção múltipla de imagens:** processa várias fotos de uma vez.
+- **Processamento em thread separada:** a interface não trava durante o processamento.
+
+### v3.0
+- Detecção de painéis como âncoras independentes
+- Threshold adaptativo por painel
+- Baseline por questão + ratio 3º/1º para ambiguidade
