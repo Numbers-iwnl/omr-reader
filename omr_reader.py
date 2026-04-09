@@ -24,7 +24,26 @@ from itertools import combinations
 
 import cv2
 import numpy as np
-from scipy.signal import find_peaks
+def find_peaks(arr, height=None, distance=1):
+    """find_peaks sem scipy – retorna (indices, {}) como scipy."""
+    import numpy as _np
+    a = _np.asarray(arr, dtype=float)
+    n = len(a)
+    peaks = []
+    for i in range(1, n - 1):
+        if a[i] > a[i - 1] and a[i] > a[i + 1]:
+            if height is None or a[i] >= height:
+                peaks.append(i)
+    # Aplica distância mínima (greedy, mantém o maior dentro de cada janela)
+    if distance > 1 and peaks:
+        kept = [peaks[0]]
+        for p in peaks[1:]:
+            if p - kept[-1] >= distance:
+                kept.append(p)
+            elif a[p] > a[kept[-1]]:
+                kept[-1] = p
+        peaks = kept
+    return _np.array(peaks, dtype=int), {}
 
 # ---------------------------------------------------------------------------
 # Constantes
@@ -165,12 +184,41 @@ def _preprocess(gray_panel: np.ndarray):
 # ---------------------------------------------------------------------------
 # Auto-detecção da grade de bolhas por projeção
 # ---------------------------------------------------------------------------
+def _fix_missing_rows(ys: List[int], expected: int = 15) -> List[int]:
+    """
+    Interpola linhas faltantes quando a projeção não detecta todos os 15 picos.
+    Útil quando bolhas vazias consecutivas criam vales abaixo do threshold.
+    """
+    ys = sorted(set(int(y) for y in ys))
+    if not ys:
+        return ys
+    spacings = np.diff(ys) if len(ys) > 1 else np.array([28])
+    med_sp = float(np.median(spacings))
+
+    result = [ys[0]]
+    for i in range(1, len(ys)):
+        gap = ys[i] - result[-1]
+        n_missing = max(0, round(gap / med_sp) - 1)
+        if n_missing > 0:
+            step = gap / (n_missing + 1)
+            for k in range(1, n_missing + 1):
+                result.append(int(result[-1] + step))
+        result.append(ys[i])
+
+    while len(result) < expected:
+        result.append(int(result[-1] + med_sp))
+
+    return result[:expected]
+
+
 def _detect_row_y(thick: np.ndarray, n: int = 15) -> List[int]:
     bh = thick.shape[0]
     proj = np.convolve(thick.sum(axis=1).astype(float), np.ones(5)/5, mode='same')
     pks, _ = find_peaks(proj, height=proj.max()*0.15, distance=max(10,bh//(n+3)))
     top = sorted(sorted(pks, key=lambda p: -proj[p])[:n])
-    return [int(y) for y in top]
+    raw = [int(y) for y in top]
+    # Interpola linhas faltantes (bolhas vazias consecutivas podem suprimir picos)
+    return _fix_missing_rows(raw, expected=n)
 
 
 def _detect_col_x(thick: np.ndarray, n: int = 5) -> List[int]:
