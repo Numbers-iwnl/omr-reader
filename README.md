@@ -1,8 +1,13 @@
 # omr-reader
 
-**Reads phone photos of 90-question answer sheets and exports the answers to Excel.** Built to replace manual grading of practice exams: staff photograph each sheet, select the photos, and get an `.xlsx` with every answer flagged as `ok`, `blank` or `ambiguous` for a human to double-check.
+**Reads phone photos of 90-question answer sheets and exports the answers to Excel.** A prototype built to take manual, sheet-by-sheet checking off people's hands: photograph each sheet, select the photos, and get an `.xlsx` with every answer flagged as `ok`, `blank` or `ambiguous` for a human to double-check. It was never rolled out.
 
 > 🇧🇷 Leitor de gabarito: lê fotos de cartões-resposta (6 painéis × 15 questões × A–E) e exporta as respostas para `.xlsx`. Interface em português.
+
+| | |
+|---|---|
+| **Status** | Prototype. It read the real test sheets correctly but was never rolled out |
+| **Build time** | A few weeks of iteration on real photos (traditional estimate: 1–3 months) |
 
 ## How it works
 
@@ -62,6 +67,10 @@ There are none in this repository on purpose: every photo used during developmen
 ## Stack
 
 Python · OpenCV · NumPy · PySide6 · openpyxl · PyInstaller
+
+## How it was built
+
+Built with AI coding agents (Claude Code and OpenAI Codex) writing the code. My part was collecting real photos, diagnosing each failure, deciding the next approach (the table under *Evolution*), and verifying every version against the real sheets. Traditional estimates are my own ballpark for one developer writing it by hand.
 
 ---
 
